@@ -1,0 +1,26 @@
+name: Sync runs
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 06:00 WIB every day
+  workflow_dispatch:        # lets you run it manually
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install requests
+      - run: python fetch_runs.py
+        env:
+          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+      - uses: actions/deploy-pages@v4
