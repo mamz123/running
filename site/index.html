@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Runs</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f3f0; --surface: #fcfcfb; --border: #e4e2dc;
+    --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
+    --series: #2a78d6; --grid: #ecebe7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #111110; --surface: #1a1a19; --border: #2c2c2a;
+      --text: #ffffff; --text-2: #c3c2b7; --muted: #8f8e86;
+      --series: #3987e5; --grid: #2a2a28;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  h1 { font-size: 28px; margin: 0; letter-spacing: -0.02em; }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  .sub { color: var(--text-2); font-size: 13px; }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  .filters button { border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+    padding: 6px 12px; border-radius: 999px; font: inherit; font-size: 13px; cursor: pointer; }
+  .filters button.on { background: var(--text); color: var(--surface); border-color: var(--text); }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+  .tile .label { color: var(--text-2); font-size: 13px; }
+  .tile .value { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .tile .unit { font-size: 14px; color: var(--text-2); font-weight: 400; margin-left: 2px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .chart { position: relative; height: 240px; }
+  #map { height: 320px; border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--text-2); font-weight: 500; font-size: 13px; }
+  td.num, th.num { text-align: right; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--grid); }
+  tbody tr.sel { background: var(--grid); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  .pb { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .pb div .label { color: var(--text-2); font-size: 13px; }
+  .pb div .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pb div .when { color: var(--muted); font-size: 12px; }
+  .msg { padding: 40px; text-align: center; color: var(--text-2); }
+  @media (max-width: 760px) {
+    .tiles, .pb { grid-template-columns: 1fr 1fr; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>My Runs</h1>
+    <span class="sub" id="updated"></span>
+  </header>
+
+  <div class="filters" id="filters">
+    <button data-range="30">30 days</button>
+    <button data-range="90">90 days</button>
+    <button data-range="365" class="on">12 months</button>
+    <button data-range="all">All time</button>
+  </div>
+
+  <div id="content"><div class="card msg">Loading runs…</div></div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let ALL = [], range = '365', charts = [], map, routeLayer;
+
+// ---------- helpers ----------
+const fmtPace = sPerKm => {
+  if (!isFinite(sPerKm)) return '–';
+  const m = Math.floor(sPerKm / 60), s = Math.round(sPerKm % 60);
+  return s === 60 ? `${m + 1}:00` : `${m}:${String(s).padStart(2, '0')}`;
+};
+const fmtDur = s => {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.round(s % 60);
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
+};
+const fmtDate = d => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+const weekStart = d => { const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+
+// Google encoded polyline -> [[lat,lng],...]
+function decodePolyline(str) {
+  let i = 0, lat = 0, lng = 0, out = [];
+  while (i < str.length) {
+    for (const k of [0, 1]) {
+      let shift = 0, result = 0, b;
+      do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      const d = (result & 1) ? ~(result >> 1) : (result >> 1);
+      if (k === 0) lat += d; else lng += d;
+    }
+    out.push([lat / 1e5, lng / 1e5]);
+  }
+  return out;
+}
+
+// ---------- load ----------
+fetch('runs.json', { cache: 'no-store' })
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(data => {
+    ALL = data.map(r => ({ ...r, d: new Date(r.date), pace: r.moving_time_s / r.distance_km }))
+              .filter(r => r.distance_km > 0)
+              .sort((a, b) => b.d - a.d);
+    if (!ALL.length) { $('#content').innerHTML = '<div class="card msg">No runs found yet.</div>'; return; }
+    $('#updated').textContent = `Latest run: ${fmtDate(ALL[0].d)}`;
+    render();
+  })
+  .catch(() => { $('#content').innerHTML = '<div class="card msg">Couldn’t load runs.json. Run the “Sync runs” workflow first.</div>'; });
+
+$('#filters').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#filters button').forEach(x => x.classList.toggle('on', x === b));
+  range = b.dataset.range; render();
+});
+
+// ---------- render ----------
+function render() {
+  const cutoff = range === 'all' ? new Date(0) : new Date(Date.now() - range * 864e5);
+  const runs = ALL.filter(r => r.d >= cutoff);
+
+  const totalKm = runs.reduce((s, r) => s + r.distance_km, 0);
+  const totalS = runs.reduce((s, r) => s + r.moving_time_s, 0);
+  const longest = runs.reduce((m, r) => r.distance_km > (m?.distance_km || 0) ? r : m, null);
+
+  // "Fastest run of at least X km" — average pace of the whole run, not a split time
+  const best = min => runs.filter(r => r.distance_km >= min).reduce((m, r) => !m || r.pace < m.pace ? r : m, null);
+  const pbs = [['Fastest ≥ 5 km', best(5)], ['Fastest ≥ 10 km', best(10)], ['Fastest ≥ 21.1 km', best(21.1)]];
+
+  $('#content').innerHTML = `
+    <div class="tiles">
+      ${tile('Distance', totalKm.toFixed(1), 'km')}
+      ${tile('Runs', runs.length, '')}
+      ${tile('Time', fmtDur(totalS), '')}
+      ${tile('Avg pace', runs.length ? fmtPace(totalS / totalKm) : '–', '/km')}
+    </div>
+    <div class="grid2">
+      <div class="card"><h2>Weekly distance (km)</h2><div class="chart"><canvas id="weekly"></canvas></div></div>
+      <div class="card"><h2>Pace per run (min/km, faster is higher)</h2><div class="chart"><canvas id="pace"></canvas></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><h2>Average heart rate per run (bpm)</h2><div class="chart"><canvas id="hr"></canvas></div></div>
+      <div class="card"><h2 id="mapTitle">Route</h2><div id="map"></div></div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <h2>Bests in this period</h2>
+      <div class="pb">
+        ${pbs.map(([l, r]) => pbCell(l, r ? fmtPace(r.pace) + ' /km' : '–', r)).join('')}
+        ${pbCell('Longest run', longest ? longest.distance_km.toFixed(2) + ' km' : '–', longest)}
+      </div>
+    </div>
+    <div class="card">
+      <h2>Runs</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Date</th><th>Name</th><th class="num">Distance</th><th class="num">Time</th><th class="num">Pace</th><th class="num">Avg HR</th><th class="num">Elev</th></tr></thead>
+        <tbody id="rows">${runs.slice(0, 50).map((r, i) => `
+          <tr data-i="${i}"><td>${fmtDate(r.d)}</td><td>${esc(r.name)}</td>
+          <td class="num">${r.distance_km.toFixed(2)} km</td><td class="num">${fmtDur(r.moving_time_s)}</td>
+          <td class="num">${fmtPace(r.pace)}</td><td class="num">${r.avg_hr ? Math.round(r.avg_hr) : '–'}</td>
+          <td class="num">${Math.round(r.elev_m)} m</td></tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
+
+  drawCharts(runs);
+  drawMap(runs[0]);
+  $('#rows').addEventListener('click', e => {
+    const tr = e.target.closest('tr'); if (!tr) return;
+    drawMap(runs[+tr.dataset.i], +tr.dataset.i);
+    $('#map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
+const tile = (l, v, u) => `<div class="card tile"><div class="label">${l}</div><div class="value">${v}<span class="unit">${u}</span></div></div>`;
+const pbCell = (l, v, r) => `<div><div class="label">${l}</div><div class="value">${v}</div><div class="when">${r ? fmtDate(r.d) : ''}</div></div>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ---------- charts ----------
+function drawCharts(runs) {
+  charts.forEach(c => c.destroy()); charts = [];
+  const series = css('--series'), grid = css('--grid'), text2 = css('--text-2');
+  Chart.defaults.color = text2;
+  Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  const base = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { displayColors: false, padding: 10 } },
+    scales: {
+      x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0 } },
+      y: { grid: { color: grid }, border: { display: false } }
+    }
+  };
+
+  // Weekly totals, including empty weeks
+  const weeks = new Map();
+  if (runs.length) {
+    const first = weekStart(runs[runs.length - 1].d), last = weekStart(new Date());
+    for (let w = new Date(first); w <= last; w.setDate(w.getDate() + 7)) weeks.set(w.getTime(), 0);
+    runs.forEach(r => { const k = weekStart(r.d).getTime(); weeks.set(k, (weeks.get(k) || 0) + r.distance_km); });
+  }
+  const wk = [...weeks.entries()];
+  charts.push(new Chart($('#weekly'), {
+    type: 'bar',
+    data: { labels: wk.map(([k]) => new Date(+k).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })),
+      datasets: [{ data: wk.map(([, v]) => +v.toFixed(1)), backgroundColor: series,
+        borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start', maxBarThickness: 24 }] },
+    options: { ...base, plugins: { ...base.plugins, tooltip: { ...base.plugins.tooltip,
+      callbacks: { title: i => 'Week of ' + i[0].label, label: i => i.raw + ' km' } } } }
+  }));
+
+  const chrono = [...runs].reverse();
+  const line = (canvas, values, yOpts, label) => new Chart(canvas, {
+    type: 'line',
+    data: { labels: chrono.map(r => r.d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })),
+      datasets: [{ data: values, borderColor: series, backgroundColor: series, borderWidth: 2,
+        pointRadius: 3, pointHoverRadius: 6, tension: 0.25, spanGaps: true }] },
+    options: { ...base, interaction: { mode: 'index', intersect: false },
+      scales: { ...base.scales, y: { ...base.scales.y, ...yOpts } },
+      plugins: { ...base.plugins, tooltip: { ...base.plugins.tooltip,
+        callbacks: { title: i => chrono[i[0].dataIndex].name + ' · ' + i[0].label,
+                     label: i => label(i.raw, chrono[i.dataIndex]) } } } }
+  });
+
+  charts.push(line($('#pace'), chrono.map(r => r.pace),
+    { reverse: true, ticks: { callback: v => fmtPace(v) } },
+    (v, r) => `${fmtPace(v)} /km · ${r.distance_km.toFixed(2)} km`));
+
+  charts.push(line($('#hr'), chrono.map(r => r.avg_hr ? Math.round(r.avg_hr) : null),
+    {}, (v, r) => `${v} bpm · ${fmtPace(r.pace)} /km`));
+}
+
+// ---------- map ----------
+function drawMap(run, i = 0) {
+  if (map) { map.remove(); map = null; }
+  document.querySelectorAll('#rows tr').forEach(tr => tr.classList.remove('sel'));
+  if (!run) return;
+  const row = document.querySelector(`#rows tr[data-i="${i}"]`);
+  if (row) row.classList.add('sel');
+  $('#mapTitle').textContent = `Route · ${run.name} (${fmtDate(run.d)})`;
+  const pts = run.polyline ? decodePolyline(run.polyline) : [];
+  if (!pts.length) { $('#map').innerHTML = '<div class="msg">No GPS route for this run.</div>'; return; }
+  map = L.map('map', { scrollWheelZoom: false });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+  const pl = L.polyline(pts, { color: css('--series'), weight: 4 }).addTo(map);
+  map.fitBounds(pl.getBounds(), { padding: [20, 20] });
+}
+</script>
+</body>
+</html>
