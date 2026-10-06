@@ -1,7 +1,7 @@
 name: Sync runs
 on:
   schedule:
-    - cron: "0 23 * * *"   # 06:00 WIB every day
+    - cron: "0 */3 * * *"   # 06:00 WIB every day
   workflow_dispatch:        # lets you run it manually
 permissions:
   contents: read
